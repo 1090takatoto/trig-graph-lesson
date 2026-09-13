@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>三角関数のグラフ ― 単位円から y = sinθ, y = cosθ へ</title>
+<style>
+/* ------------------------------------------------------------------
+   明るい教室でのプロジェクタ投影を前提に、白背景のみで組んでいる。
+   canvas の描画色は JS 側の C と対応させているため、片方だけ変えないこと。
+   --s は文字サイズの倍率。投影時に 1.3 / 1.6 へ上げて後方の席から読ませる。
+------------------------------------------------------------------- */
+:root{
+  --s:1;
+  --bg:#ffffff; --panel:#f5f7fa; --edge:#d3dae4;
+  --fg:#12181f; --sub:#5a6675;
+  --sin:#0b62c4; --cos:#c2560a; --t:#0f7a3d;
+  --btn:#ffffff; --btn-edge:#c3ccd8;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  font-size:calc(15px * var(--s));line-height:1.5}
+
+.bar{display:flex;align-items:center;gap:calc(12px * var(--s));flex-wrap:wrap;
+  padding:calc(9px * var(--s)) calc(14px * var(--s));border-bottom:1px solid var(--edge);
+  background:var(--panel)}
+h1{font-size:calc(17px * var(--s));margin:0;white-space:nowrap;font-weight:700}
+
+/* sin / cos の切り替え。今どちらを見ているかが一目で分かるよう色で示す */
+.tabs{display:flex;gap:calc(4px * var(--s));background:var(--btn);
+  border:1px solid var(--btn-edge);border-radius:10px;padding:calc(3px * var(--s))}
+.tabs button{border:none;background:transparent;color:var(--sub);cursor:pointer;
+  font-family:inherit;font-size:calc(16px * var(--s));font-weight:700;
+  padding:calc(6px * var(--s)) calc(18px * var(--s));border-radius:8px}
+.tabs button.on{color:#fff}
+.tabs button.on[data-m="sin"]{background:var(--sin)}
+.tabs button.on[data-m="cos"]{background:var(--cos)}
+
+.tools{display:flex;gap:calc(7px * var(--s));margin-left:auto;flex-wrap:wrap}
+button.tool{background:var(--btn);color:var(--fg);border:1px solid var(--btn-edge);
+  border-radius:9px;padding:calc(7px * var(--s)) calc(11px * var(--s));
+  font-size:calc(13px * var(--s));font-family:inherit;cursor:pointer}
+button.tool:hover{border-color:var(--sin)}
+button.tool.on{background:var(--t);color:#fff;border-color:var(--t);font-weight:700}
+
+main{padding:calc(10px * var(--s))}
+canvas{width:100%;height:clamp(300px,70vh,820px);display:block;
+  background:var(--panel);border:1px solid var(--edge);border-radius:12px;touch-action:none}
+@media (max-height:520px){
+  .bar{padding:calc(5px * var(--s)) calc(10px * var(--s))}
+  h1{font-size:calc(15px * var(--s))}
+  main{padding:calc(7px * var(--s))}
+  canvas{height:calc(100vh - 140px);min-height:190px}
+}
+
+/* 値の表示。読み上げながら板書と対応させるため大きめに出す */
+.readout{display:flex;gap:calc(10px * var(--s));flex-wrap:wrap;
+  margin-top:calc(10px * var(--s))}
+.ro{background:var(--panel);border:1px solid var(--edge);border-radius:10px;
+  padding:calc(7px * var(--s)) calc(13px * var(--s));min-width:calc(150px * var(--s))}
+.ro .k{font-size:calc(11.5px * var(--s));color:var(--sub)}
+.ro .v{font-size:calc(24px * var(--s));font-weight:700;
+  font-variant-numeric:tabular-nums;line-height:1.2;white-space:nowrap}
+.ro.val .v{color:var(--sin)}
+body[data-mode="cos"] .ro.val .v{color:var(--cos)}
+.hint{font-size:calc(12.5px * var(--s));color:var(--sub);margin:calc(9px * var(--s)) 0 0}
+</style>
+</head>
+<body data-mode="sin">
+
+<header class="bar">
+  <h1>三角関数のグラフ</h1>
+  <div class="tabs">
+    <button data-m="sin" class="on">y = sin θ</button>
+    <button data-m="cos">y = cos θ</button>
+  </div>
+  <div class="tools">
+    <button class="tool" id="tgSize">文字を大きく</button>
+    <button class="tool" id="tgSnap">代表角に止める</button>
+    <button class="tool" id="btClear">なぞりを消す</button>
+    <button class="tool" id="btReset">すべて初期化</button>
+  </div>
+</header>
+
+<main>
+  <canvas id="cv"></canvas>
+  <div class="readout">
+    <div class="ro"><div class="k">角 θ</div><div class="v" id="vDeg">-</div></div>
+    <div class="ro"><div class="k">弧度法</div><div class="v" id="vRad">-</div></div>
+    <div class="ro val"><div class="k" id="kVal">sin θ</div><div class="v" id="vVal">-</div></div>
+  </div>
+  <p class="hint" id="hint">左の円の上を指でなぞってください。動いた分だけ右にグラフが描かれます。</p>
+</main>
+
+<script>
+"use strict";
+const el = i => document.getElementById(i);
+const cv = el('cv'), ctx = cv.getContext('2d');
+
+/* canvas 内では CSS 変数を使えないので、:root と対応する色をここに持つ */
+const C = {
+  grid:'#e3e8ef', axis:'#8d9aab', tick:'#5a6675', circle:'#46536a',
+  sin:'#0b62c4', cos:'#c2560a', guide:'#9aa7b6', trace:'#12181f',
+  snapMark:'#b9c3d0', point:'#ffffff',
+};
+
+const TAU = Math.PI * 2;
+const T_MIN = -Math.PI, T_MAX = 3 * Math.PI;   // 教科書と同じ範囲（2周分）
+
+let mode = 'sin';
+let theta = 0;                 // 画面に出す角（-π〜3π に収めたもの）
+/* ドラッグの基準に使う角。theta は範囲で切り詰めるため、これを基準にすると
+   端まで回したあと指を動かしたときに大きく逆走する。少し余裕を持たせた
+   範囲で別に持ち、表示するときだけ切り詰める。 */
+let thetaFree = 0;
+let traceMin = 0, traceMax = 0; // なぞって通過した範囲。ここだけグラフを描く
+let snapOn = true, sizeStep = 0, dragging = false;
+let W = 0, H = 0, fs = 1;
+
+/* 代表角。π/6 の倍数と π/4 の倍数（0°,30°,45°,60°,90°,120°,135°…）を
+   −π〜3π の範囲で並べておく。ドラッグ中にこの値へ吸い付かせる。 */
+const SNAP_ANGLES = (() => {
+  const set = new Set();
+  for (let k = -6; k <= 18; k++) set.add(k * Math.PI / 6);
+  for (let k = -4; k <= 12; k++) set.add(k * Math.PI / 4);
+  return [...set].filter(v => v >= T_MIN - 1e-9 && v <= T_MAX + 1e-9).sort((a, b) => a - b);
+})();
+
+/* 分数表記のラジアン。代表角のときだけ π/6 のように表示する */
+function radText(t) {
+  const n = Math.round(t / (Math.PI / 12));
+  if (Math.abs(t - n * Math.PI / 12) > 1e-6) return (t / Math.PI).toFixed(3) + 'π';
+  if (n === 0) return '0';
+  let num = n, den = 12;
+  const g = (a, b) => b ? g(b, a % b) : Math.abs(a);
+  const d = g(Math.abs(num), den);
+  num /= d; den /= d;
+  const sign = num < 0 ? '−' : '';
+  num = Math.abs(num);
+  const head = num === 1 ? 'π' : num + 'π';
+  return den === 1 ? sign + head : sign + head + '/' + den;
+}
+
+/* ================= レイアウト =================
+   単位円の半径とグラフの振幅を同じピクセル数にする。
+   こうしないと円の点とグラフの点が同じ高さに来ず、点線が水平に引けない。 */
+let cx, cy, r, gx, gy, ts;   // 円の中心・半径、グラフ原点、θ軸の倍率
+
+function layout() {
+  const padL = 16, padR = 22, gap = 34;
+  const midY = H / 2;
+  // 円の大きさは高さの制約と、横幅のうち円に割く分（およそ1/4）から決める
+  r = Math.min(H / 2 - 46, (W - padL - padR - gap) * 0.22);
+  r = Math.max(40, r);
+  cx = padL + r;
+  cy = midY;
+  gx = cx + r + gap;
+  gy = midY;
+  ts = (W - gx - padR) / (T_MAX - T_MIN);   // θ 1ラジアンあたりのピクセル
+}
+function resize() {
+  fs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--s')) || 1;
+  const dpr = Math.min(devicePixelRatio || 1, 2), b = cv.getBoundingClientRect();
+  W = b.width; H = b.height;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  layout();
+  draw();
+}
+
+const X = t => gx + (t - T_MIN) * ts;        // θ → 画面x
+const Y = v => gy - v * r;                   // 値 → 画面y（振幅＝円の半径）
+
+/* 円周上の点。cos のときは座標軸を90°回して、cosθ が縦方向に来るようにする
+   （教科書の「x座標の値を縦方向にとれるようにするため」と同じ）。 */
+function circlePoint(t) {
+  return mode === 'sin'
+    ? { x: cx + Math.cos(t) * r, y: cy - Math.sin(t) * r }
+    : { x: cx - Math.sin(t) * r, y: cy - Math.cos(t) * r };
+}
+const valueOf = t => mode === 'sin' ? Math.sin(t) : Math.cos(t);
+
+/* ================= 描画 ================= */
+function line(x1, y1, x2, y2, color, w, dash) {
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = w;
+  if (dash) ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawCircle() {
+  // 目盛りの薄い十字
+  line(cx - r - 14, cy, cx + r + 14, cy, C.axis, 1.2);
+  line(cx, cy - r - 14, cx, cy + r + 14, C.axis, 1.2);
+  ctx.strokeStyle = C.circle; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
+
+  // 代表角の位置に小さな印を打つ。どこに吸い付くのかが見て分かるように
+  if (snapOn) {
+    ctx.fillStyle = C.snapMark;
+    for (let k = 0; k < 24; k++) {
+      const a = k * Math.PI / 12;
+      if (Math.abs(a % (Math.PI / 6)) > 1e-9 && Math.abs(a % (Math.PI / 4)) > 1e-9) continue;
+      const p = circlePoint(a);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 2.6, 0, TAU); ctx.fill();
+    }
+  }
+
+  // 軸の向きを示すラベル。cos では軸を回しているので表示も入れ替わる
+  ctx.fillStyle = C.tick; ctx.font = (12 * fs) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if (mode === 'sin') {
+    ctx.fillText('1', cx + r + 14, cy - 11);
+    ctx.fillText('1', cx + 12, cy - r - 10);
+    ctx.fillText('−1', cx - 14, cy + r + 12);
+  } else {
+    ctx.fillText('1', cx + 13, cy - r - 10);   // 回転後、上が +1（cosθ）
+    ctx.fillText('−1', cx - 16, cy + r + 12);
+  }
+
+  // 動径と、いまの角を示す扇形
+  const p = circlePoint(theta);
+  ctx.save();
+  ctx.fillStyle = mode === 'sin' ? 'rgba(11,98,196,.13)' : 'rgba(194,86,10,.13)';
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  const base = mode === 'sin' ? 0 : Math.PI / 2;
+  ctx.arc(cx, cy, Math.min(34, r * .5), -base, -theta - (mode === 'sin' ? 0 : 0), theta < 0);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  line(cx, cy, p.x, p.y, mode === 'sin' ? C.sin : C.cos, 2.4);
+}
+
+function drawGraphAxes() {
+  // 横の基準線（y = 1, 0, −1）
+  for (const v of [1, 0, -1]) {
+    line(gx, Y(v), X(T_MAX), Y(v), v === 0 ? C.axis : C.grid, v === 0 ? 1.4 : 1);
+  }
+  ctx.fillStyle = C.tick; ctx.font = (12 * fs) + 'px sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.fillText('1', gx - 6, Y(1));
+  ctx.fillText('−1', gx - 6, Y(-1));
+
+  // θ軸の目盛りは π/2 ごと。区切りのいい点として教科書もこの刻み
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let k = -2; k <= 6; k++) {
+    const t = k * Math.PI / 2;
+    if (t < T_MIN - 1e-9 || t > T_MAX + 1e-9) continue;
+    line(X(t), Y(1), X(t), Y(-1), C.grid, 1);
+    line(X(t), Y(0) - 4, X(t), Y(0) + 4, C.axis, 1.4);
+    if (k !== 0) ctx.fillText(radText(t), X(t), Y(0) + 7);
+  }
+  ctx.textAlign = 'right';
+  ctx.fillText('O', gx - 4, Y(0) + 6);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText('θ', X(T_MAX) + 4, Y(0));
+}
+
+/* なぞって通過した範囲だけ曲線を描く。自分で描いた感覚を残すため、
+   最初から全体を描いてしまわない。 */
+function drawTrace() {
+  if (traceMax - traceMin < 1e-6) return;
+  ctx.strokeStyle = mode === 'sin' ? C.sin : C.cos;
+  ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const step = (T_MAX - T_MIN) / 900;
+  let first = true;
+  for (let t = traceMin; t <= traceMax + 1e-9; t += step) {
+    const px = X(t), py = Y(valueOf(t));
+    first ? (ctx.moveTo(px, py), first = false) : ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+}
+
+function drawLink() {
+  const p = circlePoint(theta);
+  const v = valueOf(theta);
+  const px = X(theta), py = Y(v);
+
+  // 円の点 → グラフの点 をつなぐ水平の点線。値が縦方向に対応していることを示す
+  line(p.x, p.y, px, py, C.guide, 1.6, [6, 5]);
+  // グラフの点 → θ軸 の垂線
+  line(px, py, px, Y(0), C.guide, 1.4, [4, 4]);
+  // 円の中心から点への高さ（sin なら縦、cos も回転後は縦）
+  line(cx, p.y, p.x, p.y, C.guide, 1.4, [4, 4]);
+
+  const col = mode === 'sin' ? C.sin : C.cos;
+  for (const q of [p, { x: px, y: py }]) {
+    ctx.fillStyle = col; ctx.strokeStyle = C.point; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(q.x, q.y, 8, 0, TAU); ctx.fill(); ctx.stroke();
+  }
+
+  // 値のラベル
+  ctx.font = 'bold ' + (13 * fs) + 'px sans-serif';
+  ctx.fillStyle = col; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  const label = (mode === 'sin' ? 'sin θ = ' : 'cos θ = ') + v.toFixed(3);
+  const w = ctx.measureText(label).width;
+  const lx = px + 14 + w > W - 6 ? px - 14 - w : px + 14;
+  ctx.fillStyle = 'rgba(255,255,255,.88)';
+  ctx.fillRect(lx - 5, py - 11, w + 10, 22);
+  ctx.fillStyle = col;
+  ctx.fillText(label, lx, py);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawGraphAxes();
+  drawTrace();
+  drawCircle();
+  drawLink();
+}
+
+/* ================= 状態 ================= */
+function sync() {
+  const v = valueOf(theta);
+  el('vDeg').textContent = (theta * 180 / Math.PI).toFixed(1) + '°';
+  el('vRad').textContent = radText(theta);
+  el('kVal').textContent = mode === 'sin' ? 'sin θ' : 'cos θ';
+  el('vVal').textContent = v.toFixed(3);
+  draw();
+}
+
+function setTheta(t, extend) {
+  thetaFree = Math.max(T_MIN - Math.PI, Math.min(T_MAX + Math.PI, t));
+  theta = Math.max(T_MIN, Math.min(T_MAX, thetaFree));
+  if (extend) {
+    traceMin = Math.min(traceMin, theta);
+    traceMax = Math.max(traceMax, theta);
+  }
+  sync();
+}
+
+/* 画面上の位置から角を求める。円は1周しかないので、そのままだと
+   2π をまたいだ瞬間に値が飛ぶ。前回との差を ±π に収めて積み上げる。 */
+function angleAt(px, py) {
+  let a = mode === 'sin'
+    ? Math.atan2(cy - py, px - cx)
+    : Math.atan2(cx - px, cy - py);
+  // 円は1周しかないので、そのままだと 2π をまたいだ瞬間に値が飛ぶ。
+  // 前回との差を ±π に収めてから積み上げることで連続して回せる。
+  let d = a - thetaFree;
+  while (d > Math.PI) d -= TAU;
+  while (d < -Math.PI) d += TAU;
+  return thetaFree + d;
+}
+
+function snap(t) {
+  if (!snapOn) return t;
+  // いちばん近いものを選ぶ。先に見つかった順だと 45° が 30° に吸われてしまう。
+  // 判定は画面上の距離で行い、拡大率が変わっても感触を揃える
+  let best = null, bestD = Infinity;
+  for (const s of SNAP_ANGLES) {
+    const d = Math.abs(t - s);
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return bestD * ts < 13 ? best : t;
+}
+
+/* ================= 操作 ================= */
+const loc = e => { const b = cv.getBoundingClientRect(); return { x: e.clientX - b.left, y: e.clientY - b.top }; };
+
+cv.addEventListener('pointerdown', e => {
+  const p = loc(e);
+  cv.setPointerCapture(e.pointerId);
+  dragging = true;
+  // グラフ側を触ったときは、その θ へ直接移動できるようにする
+  if (p.x > gx - 10) setTheta(snap(T_MIN + (p.x - gx) / ts), true);
+  else setTheta(snap(angleAt(p.x, p.y)), true);
+});
+cv.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const p = loc(e);
+  if (p.x > gx - 10) setTheta(snap(T_MIN + (p.x - gx) / ts), true);
+  else setTheta(snap(angleAt(p.x, p.y)), true);
+});
+function endDrag(e) { dragging = false; try { cv.releasePointerCapture(e.pointerId); } catch (_) {} }
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', endDrag);
+
+document.querySelectorAll('.tabs button').forEach(b => {
+  b.onclick = () => {
+    mode = b.dataset.m;
+    document.body.dataset.mode = mode;
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+    sync();
+  };
+});
+
+el('tgSnap').classList.add('on');
+el('tgSnap').onclick = () => {
+  snapOn = !snapOn;
+  el('tgSnap').classList.toggle('on', snapOn);
+  el('tgSnap').textContent = snapOn ? '代表角に止める' : '自由に動かす';
+  draw();
+};
+el('btClear').onclick = () => { traceMin = traceMax = theta; sync(); };
+el('btReset').onclick = () => {
+  theta = thetaFree = 0; traceMin = traceMax = 0; snapOn = true;
+  el('tgSnap').classList.add('on'); el('tgSnap').textContent = '代表角に止める';
+  sizeStep = 0; document.documentElement.style.setProperty('--s', 1);
+  el('tgSize').textContent = '文字を大きく';
+  resize();
+};
+const SIZES = [1, 1.3, 1.6], SIZE_LABEL = ['文字を大きく', '文字をもっと大きく', '文字を戻す'];
+el('tgSize').onclick = () => {
+  sizeStep = (sizeStep + 1) % SIZES.length;
+  document.documentElement.style.setProperty('--s', SIZES[sizeStep]);
+  el('tgSize').textContent = SIZE_LABEL[sizeStep];
+  requestAnimationFrame(resize);
+};
+
+addEventListener('keydown', e => {
+  const d = e.shiftKey ? Math.PI / 12 : Math.PI / 180;
+  if (e.key === 'ArrowRight') { e.preventDefault(); setTheta(theta + d, true); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); setTheta(theta - d, true); }
+  else if (e.key.toLowerCase() === 's') { e.preventDefault(); el('tgSnap').click(); }
+});
+
+addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>
