@@ -102,8 +102,9 @@ const cv = el('cv'), ctx = cv.getContext('2d');
 /* canvas 内では CSS 変数を使えないので、:root と対応する色をここに持つ */
 const C = {
   grid:'#e3e8ef', axis:'#8d9aab', tick:'#5a6675', circle:'#46536a',
-  sin:'#0b62c4', cos:'#c2560a', guide:'#9aa7b6', trace:'#12181f',
-  snapMark:'#b9c3d0', point:'#ffffff',
+  sin:'#0b62c4', cos:'#c2560a', guide:'#6b7787', trace:'#12181f',
+  snapMark:'#12181f', point:'#ffffff',
+  xaxis:'#d0202a', yaxis:'#3b4757', angle:'#12181f',
 };
 
 const TAU = Math.PI * 2;
@@ -149,10 +150,11 @@ function radText(t) {
 let cx, cy, r, gx, gy, ts;   // 円の中心・半径、グラフ原点、θ軸の倍率
 
 function layout() {
-  const padL = 16, padR = 22, gap = 34;
+  // 円とグラフが近いと点線の途中が読み取りにくいので、間隔を広めに取る
+  const padL = 20, padR = 26, gap = 64;
   const midY = H / 2;
   // 円の大きさは高さの制約と、横幅のうち円に割く分（およそ1/4）から決める
-  r = Math.min(H / 2 - 46, (W - padL - padR - gap) * 0.22);
+  r = Math.min(H / 2 - 52, (W - padL - padR - gap) * 0.21);
   r = Math.max(40, r);
   cx = padL + r;
   cy = midY;
@@ -192,45 +194,106 @@ function line(x1, y1, x2, y2, color, w, dash) {
 }
 
 function drawCircle() {
-  // 目盛りの薄い十字
-  line(cx - r - 14, cy, cx + r + 14, cy, C.axis, 1.2);
-  line(cx, cy - r - 14, cx, cy + r + 14, C.axis, 1.2);
+  /* 座標軸。x 軸を赤にして、どちらが x でどちらが y か色で分かるようにする。
+     cos のときは軸ごと90°回しているので、軸の向きと名前も一緒に回る。
+     （sin: x は右・y は上 ／ cos: x は上・y は左） */
+  const ax = r + 22;
+  const axes = mode === 'sin'
+    ? [{ dx: 1, dy: 0, name: 'x', col: C.xaxis }, { dx: 0, dy: -1, name: 'y', col: C.yaxis }]
+    : [{ dx: 0, dy: -1, name: 'x', col: C.xaxis }, { dx: -1, dy: 0, name: 'y', col: C.yaxis }];
+
+  for (const a of axes) {
+    // 正負の両方向に伸ばし、正の側に矢印と軸名を置く
+    line(cx - a.dx * ax, cy - a.dy * ax, cx + a.dx * ax, cy + a.dy * ax, a.col, 1.6);
+    const ex = cx + a.dx * ax, ey = cy + a.dy * ax;
+    ctx.save();
+    ctx.fillStyle = a.col;
+    ctx.beginPath();
+    ctx.moveTo(ex + a.dx * 7, ey + a.dy * 7);
+    ctx.lineTo(ex - a.dx * 4 - a.dy * 4, ey - a.dy * 4 + a.dx * 4);
+    ctx.lineTo(ex - a.dx * 4 + a.dy * 4, ey - a.dy * 4 - a.dx * 4);
+    ctx.closePath(); ctx.fill();
+    ctx.font = 'bold ' + (14 * fs) + 'px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(a.name, ex + a.dx * 20 - a.dy * 12, ey + a.dy * 20 + a.dx * 12);
+    ctx.restore();
+  }
+
   ctx.strokeStyle = C.circle; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
 
-  // 代表角の位置に小さな印を打つ。どこに吸い付くのかが見て分かるように
+  // 原点
+  ctx.fillStyle = C.tick; ctx.font = (13 * fs) + 'px sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText('O', cx - 6, cy + 4);
+
+  // 代表角の位置に印を打つ。どこに吸い付くのかが見て分かるように
   if (snapOn) {
     ctx.fillStyle = C.snapMark;
     for (let k = 0; k < 24; k++) {
       const a = k * Math.PI / 12;
       if (Math.abs(a % (Math.PI / 6)) > 1e-9 && Math.abs(a % (Math.PI / 4)) > 1e-9) continue;
-      const p = circlePoint(a);
-      ctx.beginPath(); ctx.arc(p.x, p.y, 2.6, 0, TAU); ctx.fill();
+      const q = circlePoint(a);
+      ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, TAU); ctx.fill();
     }
   }
 
-  // 軸の向きを示すラベル。cos では軸を回しているので表示も入れ替わる
+  // ±1 の目盛り。値が縦方向に対応している側に出す
   ctx.fillStyle = C.tick; ctx.font = (12 * fs) + 'px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  if (mode === 'sin') {
-    ctx.fillText('1', cx + r + 14, cy - 11);
-    ctx.fillText('1', cx + 12, cy - r - 10);
-    ctx.fillText('−1', cx - 14, cy + r + 12);
-  } else {
-    ctx.fillText('1', cx + 13, cy - r - 10);   // 回転後、上が +1（cosθ）
-    ctx.fillText('−1', cx - 16, cy + r + 12);
-  }
+  ctx.fillText('1', cx + 13, cy - r - 11);
+  ctx.fillText('−1', cx - 16, cy + r + 12);
 
-  // 動径と、いまの角を示す扇形
+  drawAngleMark();
+
+  // 動径
   const p = circlePoint(theta);
+  line(cx, cy, p.x, p.y, mode === 'sin' ? C.sin : C.cos, 2.6);
+}
+
+/* 画面（canvas）上での角度。canvas は y が下向きなので数学の角と符号が逆になる。
+   cos のときは軸を90°回しているぶんだけ基準がずれる。
+   sin: θ=0 が右（0）／ cos: θ=0 が上（−π/2） */
+const canvasAngle = t => (mode === 'sin' ? 0 : -Math.PI / 2) - t;
+
+/* x 軸から動径までを弧で結び、矢印の先に度数を書く。
+   「いま何度のところを見ているか」を円の中だけで読めるようにする。 */
+function drawAngleMark() {
+  if (Math.abs(theta) < 1e-9) return;
+  const rad = Math.min(48, r * 0.42);
+  const a0 = canvasAngle(0), a1 = canvasAngle(theta);
+
   ctx.save();
-  ctx.fillStyle = mode === 'sin' ? 'rgba(11,98,196,.13)' : 'rgba(194,86,10,.13)';
-  ctx.beginPath(); ctx.moveTo(cx, cy);
-  const base = mode === 'sin' ? 0 : Math.PI / 2;
-  ctx.arc(cx, cy, Math.min(34, r * .5), -base, -theta - (mode === 'sin' ? 0 : 0), theta < 0);
+  // θ>0 は反時計回り。canvas では角度が減る向きなので counterclockwise を立てる
+  ctx.strokeStyle = C.angle; ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.arc(cx, cy, rad, a0, a1, theta > 0);
+  ctx.stroke();
+
+  // 弧の終点に矢印。回っている向きが分かる
+  const ex = cx + Math.cos(a1) * rad, ey = cy + Math.sin(a1) * rad;
+  const sgn = theta > 0 ? 1 : -1;
+  const tx = Math.sin(a1) * sgn, ty = -Math.cos(a1) * sgn;   // 進む向きの単位ベクトル
+  ctx.fillStyle = C.angle;
+  ctx.beginPath();
+  ctx.moveTo(ex + tx * 9, ey + ty * 9);
+  ctx.lineTo(ex - tx * 3 - ty * 5, ey - ty * 3 + tx * 5);
+  ctx.lineTo(ex - tx * 3 + ty * 5, ey - ty * 3 - tx * 5);
   ctx.closePath(); ctx.fill();
+
+  // 度数は弧の外側、ちょうど真ん中あたりに置く
+  const am = canvasAngle(theta / 2);
+  const lx = cx + Math.cos(am) * (rad + 26), ly = cy + Math.sin(am) * (rad + 26);
+  const d = theta * 180 / Math.PI;
+  const txt = (Math.abs(d - Math.round(d)) < 1e-6 ? Math.round(d) : d.toFixed(1)) + '°';
+  ctx.font = 'bold ' + (15 * fs) + 'px sans-serif';
+  const w = ctx.measureText(txt).width;
+  ctx.fillStyle = 'rgba(245,247,250,.92)';
+  ctx.fillRect(lx - w / 2 - 5, ly - 11, w + 10, 22);
+  ctx.fillStyle = C.angle;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(txt, lx, ly);
   ctx.restore();
-  line(cx, cy, p.x, p.y, mode === 'sin' ? C.sin : C.cos, 2.4);
 }
 
 function drawGraphAxes() {
@@ -243,19 +306,50 @@ function drawGraphAxes() {
   ctx.fillText('1', gx - 6, Y(1));
   ctx.fillText('−1', gx - 6, Y(-1));
 
-  // θ軸の目盛りは π/2 ごと。区切りのいい点として教科書もこの刻み
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  for (let k = -2; k <= 6; k++) {
-    const t = k * Math.PI / 2;
+  /* 目盛りは π/4 刻み。代表角の 45°系（π/4, 3π/4 …）も読めるようにする。
+     ラベルは間隔が足りないと重なるので、前に置いた位置を覚えて間引く。
+     π/2 の倍数は必ず出し、π/4 系は空きがあるときだけ出す。 */
+  const marks = [];
+  for (let k = -4; k <= 12; k++) {
+    const t = k * Math.PI / 4;
     if (t < T_MIN - 1e-9 || t > T_MAX + 1e-9) continue;
-    line(X(t), Y(1), X(t), Y(-1), C.grid, 1);
-    line(X(t), Y(0) - 4, X(t), Y(0) + 4, C.axis, 1.4);
-    if (k !== 0) ctx.fillText(radText(t), X(t), Y(0) + 7);
+    marks.push({ t, major: Math.abs(k % 2) < 1e-9 });
   }
-  ctx.textAlign = 'right';
-  ctx.fillText('O', gx - 4, Y(0) + 6);
+  for (const m of marks) {
+    line(X(m.t), Y(1), X(m.t), Y(-1), C.grid, 1);
+    line(X(m.t), Y(0) - (m.major ? 5 : 3), X(m.t), Y(0) + (m.major ? 5 : 3), C.axis, m.major ? 1.4 : 1);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  let lastRight = -Infinity;
+  for (const m of marks.filter(x => x.major).concat(marks.filter(x => !x.major))) {
+    if (Math.abs(m.t) < 1e-9) continue;   // 原点は O として別に書く
+    ctx.font = (m.major ? 12 : 10.5) * fs + 'px sans-serif';
+    const txt = radText(m.t), w = ctx.measureText(txt).width;
+    const x = X(m.t);
+    if (m.major) {
+      ctx.fillStyle = C.tick;
+      ctx.fillText(txt, x, Y(0) + 8);
+      lastRight = Math.max(lastRight, x + w / 2);
+    } else {
+      // π/4 系は、隣のラベルと重ならないときだけ出す
+      let clash = false;
+      for (const o of marks.filter(z => z.major)) {
+        ctx.font = (12 * fs) + 'px sans-serif';
+        const ow = ctx.measureText(radText(o.t)).width;
+        if (Math.abs(X(o.t) - x) < (ow + w) / 2 + 5) { clash = true; break; }
+      }
+      if (clash) continue;
+      ctx.font = (10.5 * fs) + 'px sans-serif';
+      ctx.fillStyle = C.sub || '#5a6675';
+      ctx.fillText(txt, x, Y(0) + 8);
+    }
+  }
+  ctx.fillStyle = C.tick; ctx.font = (13 * fs) + 'px sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText('O', gx - 5, Y(0) + 5);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText('θ', X(T_MAX) + 4, Y(0));
+  ctx.font = 'bold ' + (14 * fs) + 'px sans-serif';
+  ctx.fillText('θ', X(T_MAX) + 6, Y(0));
 }
 
 /* なぞって通過した範囲だけ曲線を描く。自分で描いた感覚を残すため、
