@@ -195,19 +195,28 @@ function drawFrac(parts, x, yTop, size, color, measureOnly) {
    こうしないと円の点とグラフの点が同じ高さに来ず、点線が水平に引けない。 */
 let cx, cy, r, gx, gy, ts;   // 円の中心・半径、グラフ原点、θ軸の倍率
 
+/* θ軸のラベルは代表角すべてを出す。30° と 45° の差は π/12（約12px）しかなく
+   横一列には並べられないが、系統ごとに見ると間隔がある（π/2の倍数は73px、
+   π/4系73px、π/3系49px、π/6系97px）。段違いに置けば全部入る。
+   実測では2段で収まるが、文字を大きくしたときのために4段ぶんの高さを見込む。 */
+const LABEL_ROWS = 4, LABEL_ROW_H = 23;
+
 function layout() {
   /* 円とグラフが近いと点線の途中が読み取りにくいので、間隔を広めに取る。
      左余白は cos のときに y 軸（左向き）の矢印とラベルが画面外に出ない幅が必要。
      軸は半径+24 まで伸ばし、そのさらに外側にラベルを置くため 60px 確保する。 */
   const padL = 60, padR = 26, gap = 64;
-  const midY = H / 2;
   // 円の大きさは高さの制約と、横幅のうち円に割く分（およそ1/4）から決める
-  r = Math.min(H / 2 - 52, (W - padL - padR - gap) * 0.23);
+  /* 高さの割り振り。上は円の軸の矢印と円周のラベル、
+     下は θ軸のラベル（最大4段）に使う。残りを振幅（＝円の半径）に充てる。 */
+  const needBelow = LABEL_ROWS * LABEL_ROW_H * fs;
+  const needAbove = 44 * fs;
+  r = Math.min((H - needBelow - needAbove) / 2, (W - padL - padR - gap) * 0.23);
   r = Math.max(40, r);
   cx = padL + r;
-  cy = midY;
+  cy = needAbove + r;          // 円とグラフの中心は同じ高さ（点線を水平に保つ）
   gx = cx + r + gap;
-  gy = midY;
+  gy = cy;
   ts = (W - gx - padR) / (T_MAX - T_MIN);   // θ 1ラジアンあたりのピクセル
 }
 function resize() {
@@ -361,18 +370,17 @@ function drawGraphAxes() {
   for (const v of [1, 0, -1]) {
     line(gx, Y(v), X(T_MAX), Y(v), v === 0 ? C.axis : C.grid, v === 0 ? 1.4 : 1);
   }
-  ctx.fillStyle = C.tick; ctx.font = (12 * fs) + 'px sans-serif';
-  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  ctx.fillText('1', gx - 6, Y(1));
-  ctx.fillText('−1', gx - 6, Y(-1));
 
   /* 目盛りは代表角すべて（π/6 系と π/4 系）に打つ。
      ただし 30° と 45° の差は π/12 しかなく、ラベルを全部並べると重なる。
      そこで重要度の順（π/2 → π/3・π/4 → π/6）に置いていき、
      すでに置いたラベルと重なるものだけを落とす。 */
+  /* 系統ごとに段を分けるため、重要度で 4 つに仕分ける。
+     π/3 系と π/4 系を同じ段に入れると π/12 しか離れず重なるので別扱いにする。
+       0: π/2 の倍数 ／ 1: π/3 系 ／ 2: π/4 系 ／ 3: π/6 系 */
   const marks = SNAP_ANGLES.map(t => {
     const n = Math.round(t / U);                    // π/12 を単位とした整数
-    const tier = n % 6 === 0 ? 0 : (n % 4 === 0 || n % 3 === 0 ? 1 : 2);
+    const tier = n % 6 === 0 ? 0 : (n % 4 === 0 ? 1 : (n % 3 === 0 ? 2 : 3));
     return { t, n, tier, major: n % 6 === 0 };
   });
 
@@ -382,22 +390,36 @@ function drawGraphAxes() {
          C.axis, m.major ? 1.5 : 1.2);
   }
 
+  /* 重要な系統から順に、空いている段へ詰めていく。
+     同じ段に置けないものだけ下の段へ回すので、全部の代表角が出る。 */
   const yTop = Y(0) + 9;
-  const placed = [];   // 置いたラベルの左右の範囲
+  const rowH = LABEL_ROW_H * fs;
+  const rows = [[], [], [], [], []];
   for (const m of [...marks].sort((a, b) => a.tier - b.tier)) {
     if (m.n === 0) continue;                        // 原点は O として別に書く
     const size = (m.tier === 0 ? 13 : 11.5) * fs;
     const parts = radParts(m.t);
     const box = drawFrac(parts, X(m.t), yTop, size, C.tick, true);
-    const x0 = X(m.t) - box.w / 2 - 4, x1 = X(m.t) + box.w / 2 + 4;
+    const x0 = X(m.t) - box.w / 2 - 3, x1 = X(m.t) + box.w / 2 + 3;
     if (x1 > W - 2) continue;
-    if (placed.some(p => x0 < p[1] && x1 > p[0])) continue;
-    drawFrac(parts, X(m.t), yTop, size, m.tier === 0 ? C.tick : C.sub2);
-    placed.push([x0, x1]);
+    let ri = 0;
+    while (ri < rows.length && rows[ri].some(p => x0 < p[1] && x1 > p[0])) ri++;
+    if (ri >= rows.length) continue;                // 起こらないが保険
+    rows[ri].push([x0, x1]);
+    // 2段目以降は目盛りとの対応が分かるよう、軸から縦の細線でつなぐ
+    if (ri > 0) line(X(m.t), Y(0) + 6, X(m.t), yTop + ri * rowH - 2, C.grid, 1);
+    drawFrac(parts, X(m.t), yTop + ri * rowH, size, m.tier === 0 ? C.tick : C.sub2);
   }
 
   // 縦軸。値の 0 がどこかを示すため θ=0 の位置に引く（軸名は入れない）
   line(X(0), Y(1) - 10, X(0), Y(-1) + 10, C.axis, 1.6);
+  // ±1 の目盛りとラベル。縦軸のすぐ横に置いて対応が分かるようにする
+  ctx.fillStyle = C.tick; ctx.font = (12 * fs) + 'px sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const v of [1, -1]) {
+    line(X(0) - 5, Y(v), X(0) + 5, Y(v), C.axis, 1.4);
+    ctx.fillText(v === 1 ? '1' : '−1', X(0) - 9, Y(v));
+  }
 
   // 原点は θ=0 と値0が交わるところ。グラフの左端ではない
   ctx.fillStyle = C.tick; ctx.font = (13 * fs) + 'px sans-serif';
