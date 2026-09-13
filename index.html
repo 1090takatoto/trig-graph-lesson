@@ -63,6 +63,11 @@ canvas{width:100%;height:clamp(300px,70vh,820px);display:block;
 .ro .k{font-size:calc(11.5px * var(--s));color:var(--sub)}
 .ro .v{font-size:calc(24px * var(--s));font-weight:700;
   font-variant-numeric:tabular-nums;line-height:1.2;white-space:nowrap}
+/* 分数は分子と分母を上下に置く。π/6 のような斜線表記は板書と形が違う */
+.frac{display:inline-grid;justify-items:center;line-height:1.1;vertical-align:middle}
+.frac .nu{padding:0 calc(3px * var(--s))}
+.frac .de{padding:0 calc(3px * var(--s));border-top:2px solid currentColor;
+  margin-top:calc(2px * var(--s))}
 .ro.val .v{color:var(--sin)}
 body[data-mode="cos"] .ro.val .v{color:var(--cos)}
 .hint{font-size:calc(12.5px * var(--s));color:var(--sub);margin:calc(9px * var(--s)) 0 0}
@@ -104,7 +109,7 @@ const C = {
   grid:'#e3e8ef', axis:'#8d9aab', tick:'#5a6675', circle:'#46536a',
   sin:'#0b62c4', cos:'#c2560a', guide:'#6b7787', trace:'#12181f',
   snapMark:'#12181f', point:'#ffffff',
-  xaxis:'#d0202a', yaxis:'#3b4757', angle:'#12181f',
+  xaxis:'#d0202a', yaxis:'#3b4757', angle:'#12181f', sub2:'#6b7787',
 };
 
 const TAU = Math.PI * 2;
@@ -136,19 +141,53 @@ const SNAP_ANGLES = SNAP_UNITS.map(n => n * U)
 /* 1周ぶんの代表角（0〜2π未満）。円周に印を打つのに使う */
 const CIRCLE_UNITS = [...new Set(SNAP_UNITS.map(n => ((n % 24) + 24) % 24))].sort((a, b) => a - b);
 
-/* 分数表記のラジアン。代表角のときだけ π/6 のように表示する */
-function radText(t) {
+/* ラジアンの表示。分子と分母に分けて返す。
+   den が null なら分数ではないので1行で書く。
+   π/12 の整数倍から外れた角（吸着を切ったとき）は 0.42π のように小数で出す。 */
+function radParts(t) {
   const n = Math.round(t / (Math.PI / 12));
-  if (Math.abs(t - n * Math.PI / 12) > 1e-6) return (t / Math.PI).toFixed(3) + 'π';
-  if (n === 0) return '0';
-  let num = n, den = 12;
+  if (Math.abs(t - n * Math.PI / 12) > 1e-6) return { num: (t / Math.PI).toFixed(2) + 'π', den: null };
+  if (n === 0) return { num: '0', den: null };
   const g = (a, b) => b ? g(b, a % b) : Math.abs(a);
-  const d = g(Math.abs(num), den);
-  num /= d; den /= d;
+  const d = g(Math.abs(n), 12);
+  const num = n / d, den = 12 / d;
   const sign = num < 0 ? '−' : '';
-  num = Math.abs(num);
-  const head = num === 1 ? 'π' : num + 'π';
-  return den === 1 ? sign + head : sign + head + '/' + den;
+  const m = Math.abs(num);
+  const head = sign + (m === 1 ? 'π' : m + 'π');
+  return { num: head, den: den === 1 ? null : String(den) };
+}
+/* 互換用。1行で書きたい場所（幅の見積もりなど）で使う */
+const radText = t => { const p = radParts(t); return p.den ? p.num + '/' + p.den : p.num; };
+
+/* canvas に分数を上下に組んで描く。x は中心、y は組み全体の上端。
+   返り値は占めた幅と高さ。目盛りの間引き判定に使う。 */
+function drawFrac(parts, x, yTop, size, color, measureOnly) {
+  const fsz = size, lh = fsz * 1.05;
+  ctx.save();
+  ctx.font = 'bold ' + fsz + 'px sans-serif';
+  const wn = ctx.measureText(parts.num).width;
+  const wd = parts.den ? ctx.measureText(parts.den).width : 0;
+  const w = Math.max(wn, wd);
+  const h = parts.den ? lh * 2 + 3 : lh;
+  if (!measureOnly) {
+    ctx.fillStyle = color; ctx.textAlign = 'center';
+    if (!parts.den) {
+      ctx.textBaseline = 'top';
+      ctx.fillText(parts.num, x, yTop);
+    } else {
+      ctx.textBaseline = 'top';
+      ctx.fillText(parts.num, x, yTop);
+      // 分数の横線
+      ctx.strokeStyle = color; ctx.lineWidth = Math.max(1.2, fsz * 0.09);
+      ctx.beginPath();
+      ctx.moveTo(x - w / 2 - 1, yTop + lh + 1.5);
+      ctx.lineTo(x + w / 2 + 1, yTop + lh + 1.5);
+      ctx.stroke();
+      ctx.fillText(parts.den, x, yTop + lh + 4);
+    }
+  }
+  ctx.restore();
+  return { w, h };
 }
 
 /* ================= レイアウト =================
@@ -239,12 +278,23 @@ function drawCircle() {
   ctx.textAlign = 'right'; ctx.textBaseline = 'top';
   ctx.fillText('O', cx - 6, cy + 4);
 
-  // 代表角の位置に印を打つ。どこに吸い付くのかが見て分かるように
+  // 代表角の位置に印を打ち、円の外側にその角を書く。
+  // どこに吸い付くのか、そこが何ラジアンなのかを円の中だけで読めるようにする
   if (snapOn) {
-    ctx.fillStyle = C.snapMark;
     for (const n of CIRCLE_UNITS) {
-      const q = circlePoint(n * U);
+      const t = n * U, q = circlePoint(t);
+      ctx.fillStyle = C.snapMark;
       ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, TAU); ctx.fill();
+
+      if (n === 0) continue;                        // 0 は原点ラベルと重なるので省く
+      // 円の外側へ押し出す。ラベルの高さぶん上に持ち上げて中心を合わせる
+      const ux = (q.x - cx) / r, uy = (q.y - cy) / r;
+      const parts = radParts(t);
+      const size = 12 * fs;
+      const box = drawFrac(parts, 0, 0, size, C.sub2, true);
+      const push = 16 + Math.max(box.w, box.h) * 0.45;
+      const lx = cx + ux * (r + push), ly = cy + uy * (r + push) - box.h / 2;
+      drawFrac(parts, lx, ly, size, C.sub2);
     }
   }
 
@@ -316,44 +366,36 @@ function drawGraphAxes() {
   ctx.fillText('1', gx - 6, Y(1));
   ctx.fillText('−1', gx - 6, Y(-1));
 
-  /* 目盛りは π/4 刻み。代表角の 45°系（π/4, 3π/4 …）も読めるようにする。
-     ラベルは間隔が足りないと重なるので、前に置いた位置を覚えて間引く。
-     π/2 の倍数は必ず出し、π/4 系は空きがあるときだけ出す。 */
-  const marks = [];
-  for (let k = -4; k <= 12; k++) {
-    const t = k * Math.PI / 4;
-    if (t < T_MIN - 1e-9 || t > T_MAX + 1e-9) continue;
-    marks.push({ t, major: Math.abs(k % 2) < 1e-9 });
-  }
+  /* 目盛りは代表角すべて（π/6 系と π/4 系）に打つ。
+     ただし 30° と 45° の差は π/12 しかなく、ラベルを全部並べると重なる。
+     そこで重要度の順（π/2 → π/3・π/4 → π/6）に置いていき、
+     すでに置いたラベルと重なるものだけを落とす。 */
+  const marks = SNAP_ANGLES.map(t => {
+    const n = Math.round(t / U);                    // π/12 を単位とした整数
+    const tier = n % 6 === 0 ? 0 : (n % 4 === 0 || n % 3 === 0 ? 1 : 2);
+    return { t, n, tier, major: n % 6 === 0 };
+  });
+
   for (const m of marks) {
     line(X(m.t), Y(1), X(m.t), Y(-1), C.grid, m.major ? 1.2 : 1);
-    line(X(m.t), Y(0) - (m.major ? 6 : 4), X(m.t), Y(0) + (m.major ? 6 : 4), C.axis, m.major ? 1.5 : 1.2);
+    line(X(m.t), Y(0) - (m.major ? 6 : 4), X(m.t), Y(0) + (m.major ? 6 : 4),
+         C.axis, m.major ? 1.5 : 1.2);
   }
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  let lastRight = -Infinity;
-  for (const m of marks.filter(x => x.major).concat(marks.filter(x => !x.major))) {
-    if (Math.abs(m.t) < 1e-9) continue;   // 原点は O として別に書く
-    ctx.font = (m.major ? 12 : 11) * fs + 'px sans-serif';
-    const txt = radText(m.t), w = ctx.measureText(txt).width;
-    const x = X(m.t);
-    if (m.major) {
-      ctx.fillStyle = C.tick;
-      ctx.fillText(txt, x, Y(0) + 8);
-      lastRight = Math.max(lastRight, x + w / 2);
-    } else {
-      // π/4 系は、隣のラベルと重ならないときだけ出す
-      let clash = false;
-      for (const o of marks.filter(z => z.major)) {
-        ctx.font = (12 * fs) + 'px sans-serif';
-        const ow = ctx.measureText(radText(o.t)).width;
-        if (Math.abs(X(o.t) - x) < (ow + w) / 2 + 5) { clash = true; break; }
-      }
-      if (clash) continue;
-      ctx.font = (11 * fs) + 'px sans-serif';
-      ctx.fillStyle = C.tick;
-      ctx.fillText(txt, x, Y(0) + 8);
-    }
+
+  const yTop = Y(0) + 9;
+  const placed = [];   // 置いたラベルの左右の範囲
+  for (const m of [...marks].sort((a, b) => a.tier - b.tier)) {
+    if (m.n === 0) continue;                        // 原点は O として別に書く
+    const size = (m.tier === 0 ? 13 : 11.5) * fs;
+    const parts = radParts(m.t);
+    const box = drawFrac(parts, X(m.t), yTop, size, C.tick, true);
+    const x0 = X(m.t) - box.w / 2 - 4, x1 = X(m.t) + box.w / 2 + 4;
+    if (x1 > W - 2) continue;
+    if (placed.some(p => x0 < p[1] && x1 > p[0])) continue;
+    drawFrac(parts, X(m.t), yTop, size, m.tier === 0 ? C.tick : C.sub2);
+    placed.push([x0, x1]);
   }
+
   // 縦軸。値の 0 がどこかを示すため θ=0 の位置に引く（軸名は入れない）
   line(X(0), Y(1) - 10, X(0), Y(-1) + 10, C.axis, 1.6);
 
@@ -424,7 +466,12 @@ function draw() {
 function sync() {
   const v = valueOf(theta);
   el('vDeg').textContent = (theta * 180 / Math.PI).toFixed(1) + '°';
-  el('vRad').textContent = radText(theta);
+  // 弧度法の表示も分子と分母を上下に置く
+  const rp = radParts(theta);
+  el('vRad').innerHTML = rp.den
+    ? '<span class="frac"><span class="nu">' + rp.num + '</span>' +
+      '<span class="de">' + rp.den + '</span></span>'
+    : rp.num;
   el('kVal').textContent = mode === 'sin' ? 'sin θ' : 'cos θ';
   el('vVal').textContent = v.toFixed(3);
   draw();
