@@ -120,14 +120,21 @@ let traceMin = 0, traceMax = 0; // なぞって通過した範囲。ここだけ
 let snapOn = true, sizeStep = 0, dragging = false;
 let W = 0, H = 0, fs = 1;
 
-/* 代表角。π/6 の倍数と π/4 の倍数（0°,30°,45°,60°,90°,120°,135°…）を
-   −π〜3π の範囲で並べておく。ドラッグ中にこの値へ吸い付かせる。 */
-const SNAP_ANGLES = (() => {
+/* 代表角。π/6 の倍数と π/4 の倍数（0°,30°,45°,60°,90°,120°,135°…）。
+   π/12 を単位とした整数（分子）で持つ。
+   角どうしの一致を a % (π/4) のような剰余で調べると、15π/12 が π/4 の5倍に
+   わずかに届かず剰余が π/4 の直前になるため、225° を取りこぼす。 */
+const SNAP_UNITS = (() => {
   const set = new Set();
-  for (let k = -6; k <= 18; k++) set.add(k * Math.PI / 6);
-  for (let k = -4; k <= 12; k++) set.add(k * Math.PI / 4);
-  return [...set].filter(v => v >= T_MIN - 1e-9 && v <= T_MAX + 1e-9).sort((a, b) => a - b);
+  for (let k = -6; k <= 18; k++) set.add(k * 2);   // π/6 = 2 × (π/12)
+  for (let k = -4; k <= 12; k++) set.add(k * 3);   // π/4 = 3 × (π/12)
+  return [...set].sort((a, b) => a - b);
 })();
+const U = Math.PI / 12;
+const SNAP_ANGLES = SNAP_UNITS.map(n => n * U)
+  .filter(v => v >= T_MIN - 1e-9 && v <= T_MAX + 1e-9);
+/* 1周ぶんの代表角（0〜2π未満）。円周に印を打つのに使う */
+const CIRCLE_UNITS = [...new Set(SNAP_UNITS.map(n => ((n % 24) + 24) % 24))].sort((a, b) => a - b);
 
 /* 分数表記のラジアン。代表角のときだけ π/6 のように表示する */
 function radText(t) {
@@ -150,11 +157,13 @@ function radText(t) {
 let cx, cy, r, gx, gy, ts;   // 円の中心・半径、グラフ原点、θ軸の倍率
 
 function layout() {
-  // 円とグラフが近いと点線の途中が読み取りにくいので、間隔を広めに取る
-  const padL = 20, padR = 26, gap = 64;
+  /* 円とグラフが近いと点線の途中が読み取りにくいので、間隔を広めに取る。
+     左余白は cos のときに y 軸（左向き）の矢印とラベルが画面外に出ない幅が必要。
+     軸は半径+24 まで伸ばし、そのさらに外側にラベルを置くため 60px 確保する。 */
+  const padL = 60, padR = 26, gap = 64;
   const midY = H / 2;
   // 円の大きさは高さの制約と、横幅のうち円に割く分（およそ1/4）から決める
-  r = Math.min(H / 2 - 52, (W - padL - padR - gap) * 0.21);
+  r = Math.min(H / 2 - 52, (W - padL - padR - gap) * 0.23);
   r = Math.max(40, r);
   cx = padL + r;
   cy = midY;
@@ -197,7 +206,7 @@ function drawCircle() {
   /* 座標軸。x 軸を赤にして、どちらが x でどちらが y か色で分かるようにする。
      cos のときは軸ごと90°回しているので、軸の向きと名前も一緒に回る。
      （sin: x は右・y は上 ／ cos: x は上・y は左） */
-  const ax = r + 22;
+  const ax = r + 24;
   const axes = mode === 'sin'
     ? [{ dx: 1, dy: 0, name: 'x', col: C.xaxis }, { dx: 0, dy: -1, name: 'y', col: C.yaxis }]
     : [{ dx: 0, dy: -1, name: 'x', col: C.xaxis }, { dx: -1, dy: 0, name: 'y', col: C.yaxis }];
@@ -215,7 +224,10 @@ function drawCircle() {
     ctx.closePath(); ctx.fill();
     ctx.font = 'bold ' + (14 * fs) + 'px sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(a.name, ex + a.dx * 20 - a.dy * 12, ey + a.dy * 20 + a.dx * 12);
+    // 軸の先の外側にラベルを置く。左向き・下向きでも画面に収まるよう寄せる
+    const lx = Math.max(10, Math.min(W - 10, ex + a.dx * 18 - a.dy * 10));
+    const ly = Math.max(10, Math.min(H - 10, ey + a.dy * 18 + a.dx * 10));
+    ctx.fillText(a.name, lx, ly);
     ctx.restore();
   }
 
@@ -230,10 +242,8 @@ function drawCircle() {
   // 代表角の位置に印を打つ。どこに吸い付くのかが見て分かるように
   if (snapOn) {
     ctx.fillStyle = C.snapMark;
-    for (let k = 0; k < 24; k++) {
-      const a = k * Math.PI / 12;
-      if (Math.abs(a % (Math.PI / 6)) > 1e-9 && Math.abs(a % (Math.PI / 4)) > 1e-9) continue;
-      const q = circlePoint(a);
+    for (const n of CIRCLE_UNITS) {
+      const q = circlePoint(n * U);
       ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, TAU); ctx.fill();
     }
   }
@@ -316,14 +326,14 @@ function drawGraphAxes() {
     marks.push({ t, major: Math.abs(k % 2) < 1e-9 });
   }
   for (const m of marks) {
-    line(X(m.t), Y(1), X(m.t), Y(-1), C.grid, 1);
-    line(X(m.t), Y(0) - (m.major ? 5 : 3), X(m.t), Y(0) + (m.major ? 5 : 3), C.axis, m.major ? 1.4 : 1);
+    line(X(m.t), Y(1), X(m.t), Y(-1), C.grid, m.major ? 1.2 : 1);
+    line(X(m.t), Y(0) - (m.major ? 6 : 4), X(m.t), Y(0) + (m.major ? 6 : 4), C.axis, m.major ? 1.5 : 1.2);
   }
   ctx.textAlign = 'center'; ctx.textBaseline = 'top';
   let lastRight = -Infinity;
   for (const m of marks.filter(x => x.major).concat(marks.filter(x => !x.major))) {
     if (Math.abs(m.t) < 1e-9) continue;   // 原点は O として別に書く
-    ctx.font = (m.major ? 12 : 10.5) * fs + 'px sans-serif';
+    ctx.font = (m.major ? 12 : 11) * fs + 'px sans-serif';
     const txt = radText(m.t), w = ctx.measureText(txt).width;
     const x = X(m.t);
     if (m.major) {
@@ -339,14 +349,18 @@ function drawGraphAxes() {
         if (Math.abs(X(o.t) - x) < (ow + w) / 2 + 5) { clash = true; break; }
       }
       if (clash) continue;
-      ctx.font = (10.5 * fs) + 'px sans-serif';
-      ctx.fillStyle = C.sub || '#5a6675';
+      ctx.font = (11 * fs) + 'px sans-serif';
+      ctx.fillStyle = C.tick;
       ctx.fillText(txt, x, Y(0) + 8);
     }
   }
+  // 縦軸。値の 0 がどこかを示すため θ=0 の位置に引く（軸名は入れない）
+  line(X(0), Y(1) - 10, X(0), Y(-1) + 10, C.axis, 1.6);
+
+  // 原点は θ=0 と値0が交わるところ。グラフの左端ではない
   ctx.fillStyle = C.tick; ctx.font = (13 * fs) + 'px sans-serif';
   ctx.textAlign = 'right'; ctx.textBaseline = 'top';
-  ctx.fillText('O', gx - 5, Y(0) + 5);
+  ctx.fillText('O', X(0) - 6, Y(0) + 5);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.font = 'bold ' + (14 * fs) + 'px sans-serif';
   ctx.fillText('θ', X(T_MAX) + 6, Y(0));
